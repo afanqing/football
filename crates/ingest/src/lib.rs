@@ -22,6 +22,7 @@ impl FootballDataClient {
     pub fn new(token: String) -> Result<Self> {
         let client = Client::builder()
             .user_agent(concat!("football-analytics/", env!("CARGO_PKG_VERSION")))
+            .timeout(Duration::from_secs(30))
             .build()
             .context("build HTTP client")?;
         Ok(Self {
@@ -38,12 +39,7 @@ impl FootballDataClient {
         date_from: Option<NaiveDate>,
         date_to: Option<NaiveDate>,
     ) -> Result<CapturedMatches> {
-        if let Some(started) = self.last_request_started {
-            let elapsed = started.elapsed();
-            if elapsed < self.request_interval {
-                tokio::time::sleep(self.request_interval - elapsed).await;
-            }
-        }
+        self.wait_until_ready().await;
 
         let mut request = self
             .client
@@ -60,24 +56,38 @@ impl FootballDataClient {
             request = request.query(&[("dateTo", date)]);
         }
 
+        let request_started_at = Utc::now();
         self.last_request_started = Some(std::time::Instant::now());
         let response = request.send().await.context("request football-data.org")?;
         let status = response.status();
         self.request_interval = request_interval_from_headers(response.headers());
         let body = response.bytes().await.context("read API response")?;
+        let captured_at = Utc::now();
         if status != StatusCode::OK {
             bail!("football-data.org returned HTTP {status}");
         }
         let parsed: MatchesResponse =
             serde_json::from_slice(&body).context("decode football-data.org matches response")?;
+        let matches = parsed.matches;
 
         Ok(CapturedMatches {
             competition: competition.to_owned(),
-            match_count: parsed.matches.len(),
+            match_count: matches.len(),
+            matches,
             payload: body.to_vec(),
-            captured_at: Utc::now(),
+            request_started_at,
+            captured_at,
             http_status: status.as_u16(),
         })
+    }
+
+    pub async fn wait_until_ready(&self) {
+        if let Some(started) = self.last_request_started {
+            let elapsed = started.elapsed();
+            if elapsed < self.request_interval {
+                tokio::time::sleep(self.request_interval - elapsed).await;
+            }
+        }
     }
 }
 
@@ -106,8 +116,10 @@ fn request_interval_from_headers(headers: &HeaderMap) -> Duration {
 pub struct CapturedMatches {
     pub competition: String,
     pub match_count: usize,
+    pub matches: Vec<football_contracts::FootballDataMatch>,
     payload: Vec<u8>,
-    captured_at: DateTime<Utc>,
+    pub request_started_at: DateTime<Utc>,
+    pub captured_at: DateTime<Utc>,
     http_status: u16,
 }
 
@@ -310,7 +322,11 @@ mod tests {
         let capture = || CapturedMatches {
             competition: "PL".to_owned(),
             match_count: 1,
+            matches: serde_json::from_slice::<MatchesResponse>(FIXTURE)
+                .unwrap()
+                .matches,
             payload: FIXTURE.to_vec(),
+            request_started_at: captured_at,
             captured_at,
             http_status: 200,
         };

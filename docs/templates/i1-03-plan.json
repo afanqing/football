@@ -1,0 +1,23 @@
+{
+  "plan_version": 1,
+  "status": "PENDING",
+  "competition": "PL",
+  "poll_interval_seconds": 900,
+  "start_offset_minutes": 90,
+  "deadline_hours_after_kickoff": 8,
+  "minimum_fixtures": 20,
+  "minimum_match_weeks": 2,
+  "request_budget_limit": 0,
+  "approved_at_utc": null,
+  "approval_reference": "",
+  "sample_selection_approved": false,
+  "provider_semantics_approved": false,
+  "provider_terms_approved": false,
+  "poll_schedule_approved": false,
+  "approvers": {
+    "data_technical_lead": "",
+    "data_engineer": "",
+    "operator": ""
+  },
+  "fixtures": []
+}

@@ -12,6 +12,8 @@ use std::{
     process::ExitCode,
 };
 
+mod observer;
+
 const LIVE_FETCH_LOCK_PATH: &str = "/tmp/football-live-fetch.lock";
 
 #[derive(Debug, Parser)]
@@ -43,6 +45,25 @@ enum Command {
         #[arg(long, default_value = "data/bronze")]
         output: std::path::PathBuf,
     },
+    /// Run the approved I1-03 result-availability observation plan.
+    ObserveResults {
+        #[arg(long)]
+        plan: std::path::PathBuf,
+        #[arg(long, default_value = "/home/coder/football-validation/i1-03")]
+        state: std::path::PathBuf,
+    },
+    /// Rebuild I1-03 per-match availability intervals from local poll evidence.
+    SummarizeResults {
+        #[arg(long)]
+        plan: std::path::PathBuf,
+        #[arg(long, default_value = "/home/coder/football-validation/i1-03")]
+        state: std::path::PathBuf,
+    },
+    /// Validate an I1-03 plan and calculate its worst-case request count without network access.
+    ValidateResults {
+        #[arg(long)]
+        plan: std::path::PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -62,7 +83,6 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
-    let _live_fetch_lock = acquire_live_fetch_lock(Path::new(LIVE_FETCH_LOCK_PATH))?;
 
     match cli.command {
         Command::Matches {
@@ -71,6 +91,7 @@ async fn run() -> Result<()> {
             date_to,
             output,
         } => {
+            let _live_fetch_lock = acquire_live_fetch_lock(Path::new(LIVE_FETCH_LOCK_PATH))?;
             let token = std::env::var("FOOTBALL_DATA_TOKEN")
                 .context("set FOOTBALL_DATA_TOKEN before fetching matches")?;
             let mut client = FootballDataClient::new(token)?;
@@ -89,6 +110,7 @@ async fn run() -> Result<()> {
             resource,
             output,
         } => {
+            let _live_fetch_lock = acquire_live_fetch_lock(Path::new(LIVE_FETCH_LOCK_PATH))?;
             let manifest =
                 capture_sporttery_resource(&url, &resource, &SnapshotStore::new(output)).await?;
             println!(
@@ -135,6 +157,15 @@ async fn run() -> Result<()> {
                     )
                     .context("report Sporttery Bronze materialization to Dagster")?;
             }
+        }
+        Command::ObserveResults { plan, state } => {
+            observer::run(&plan, &state).await?;
+        }
+        Command::SummarizeResults { plan, state } => {
+            observer::summarize(&plan, &state)?;
+        }
+        Command::ValidateResults { plan } => {
+            observer::validate(&plan)?;
         }
     }
     Ok(())
