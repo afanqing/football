@@ -1,0 +1,31 @@
+[workspace]
+members = [
+	"crates/contracts",
+	"crates/ingest",
+	"crates/pipeline",
+	"crates/features",
+	"crates/backtest",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.89"
+
+[workspace.dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+hex = "0.4"
+linfa = "0.8.1"
+linfa-logistic = "0.8.1"
+ndarray = "0.16"
+polars = { version = "0.55.2", default-features = false, features = ["parquet"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+scirs2-core = { version = "0.6.5", default-features = false, features = ["array"] }
+sklears-calibration = "0.2.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

@@ -1,0 +1,25 @@
+[package]
+name = "football-backtest"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+football-contracts = { path = "../contracts" }
+football-features = { path = "../features" }
+linfa.workspace = true
+linfa-logistic.workspace = true
+ndarray.workspace = true
+scirs2-core.workspace = true
+sklears-calibration.workspace = true
+clap.workspace = true
+polars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "football-backtest"
+path = "src/main.rs"

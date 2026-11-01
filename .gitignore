@@ -1,0 +1,7 @@
+/target/
+/data/
+/reports/
+.env
+.env.*
+!.env.example
+**/*.rs.bk
