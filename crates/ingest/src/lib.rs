@@ -3,17 +3,19 @@ use std::{fs::OpenOptions, io::Write, path::Path, time::Duration};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, NaiveDate, Utc};
 use football_contracts::{CONTRACT_VERSION, MatchesResponse, SnapshotManifest};
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, header::HeaderMap};
 use sha2::{Digest, Sha256};
 
 const SOURCE: &str = "football-data.org";
 const SPORTTERY_SOURCE: &str = "sporttery";
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(6);
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
 pub struct FootballDataClient {
     client: Client,
     token: String,
     last_request_started: Option<std::time::Instant>,
+    request_interval: Duration,
 }
 
 impl FootballDataClient {
@@ -26,6 +28,7 @@ impl FootballDataClient {
             client,
             token,
             last_request_started: None,
+            request_interval: MIN_REQUEST_INTERVAL,
         })
     }
 
@@ -37,8 +40,8 @@ impl FootballDataClient {
     ) -> Result<CapturedMatches> {
         if let Some(started) = self.last_request_started {
             let elapsed = started.elapsed();
-            if elapsed < MIN_REQUEST_INTERVAL {
-                tokio::time::sleep(MIN_REQUEST_INTERVAL - elapsed).await;
+            if elapsed < self.request_interval {
+                tokio::time::sleep(self.request_interval - elapsed).await;
             }
         }
 
@@ -60,6 +63,7 @@ impl FootballDataClient {
         self.last_request_started = Some(std::time::Instant::now());
         let response = request.send().await.context("request football-data.org")?;
         let status = response.status();
+        self.request_interval = request_interval_from_headers(response.headers());
         let body = response.bytes().await.context("read API response")?;
         if status != StatusCode::OK {
             bail!("football-data.org returned HTTP {status}");
@@ -75,6 +79,28 @@ impl FootballDataClient {
             http_status: status.as_u16(),
         })
     }
+}
+
+fn request_interval_from_headers(headers: &HeaderMap) -> Duration {
+    if let Some(seconds) = headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return Duration::from_secs(seconds).max(MIN_REQUEST_INTERVAL);
+    }
+
+    let remaining = headers
+        .get("x-requests-available-minute")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+
+    remaining.map_or(MIN_REQUEST_INTERVAL, |remaining| {
+        Duration::from_secs(
+            (RATE_LIMIT_WINDOW.as_secs() / remaining.saturating_add(1))
+                .clamp(MIN_REQUEST_INTERVAL.as_secs(), RATE_LIMIT_WINDOW.as_secs()),
+        )
+    })
 }
 
 pub struct CapturedMatches {
@@ -226,6 +252,33 @@ mod tests {
         assert_eq!(record.competition_code.as_deref(), Some("PL"));
         assert_eq!(record.home_score, Some(2));
         assert_eq!(record.away_score, Some(1));
+    }
+
+    #[test]
+    fn request_interval_uses_rate_limit_headers_with_safe_fallbacks() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(
+            request_interval_from_headers(&headers),
+            MIN_REQUEST_INTERVAL
+        );
+
+        headers.insert("x-requests-available-minute", "4".parse().unwrap());
+        assert_eq!(
+            request_interval_from_headers(&headers),
+            Duration::from_secs(12)
+        );
+
+        headers.insert("x-requests-available-minute", "0".parse().unwrap());
+        assert_eq!(request_interval_from_headers(&headers), RATE_LIMIT_WINDOW);
+
+        headers.insert("retry-after", "15".parse().unwrap());
+        assert_eq!(
+            request_interval_from_headers(&headers),
+            Duration::from_secs(15)
+        );
+
+        headers.insert("retry-after", "invalid".parse().unwrap());
+        assert_eq!(request_interval_from_headers(&headers), RATE_LIMIT_WINDOW);
     }
 
     #[test]

@@ -3,7 +3,16 @@ use chrono::NaiveDate;
 use clap::{Parser, Subcommand};
 use dagster_pipes_rust::{PipesMetadataValue, open_dagster_pipes};
 use football_ingest::{FootballDataClient, SnapshotStore, capture_sporttery_resource};
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt,
+    fs::{File, OpenOptions},
+    path::Path,
+    process::ExitCode,
+};
+
+const LIVE_FETCH_LOCK_PATH: &str = "/tmp/football-live-fetch.lock";
 
 #[derive(Debug, Parser)]
 #[command(name = "football-ingest", about = "Football data ingestion tools")]
@@ -37,8 +46,24 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.downcast_ref::<LiveFetchBusy>().is_some() => {
+            eprintln!("another live fetch is active; refusing concurrent run");
+            ExitCode::from(75)
+        }
+        Err(error) => {
+            eprintln!("{error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
+    let _live_fetch_lock = acquire_live_fetch_lock(Path::new(LIVE_FETCH_LOCK_PATH))?;
+
     match cli.command {
         Command::Matches {
             competition,
@@ -113,4 +138,52 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct LiveFetchBusy;
+
+impl fmt::Display for LiveFetchBusy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("another live fetch is active")
+    }
+}
+
+impl Error for LiveFetchBusy {}
+
+fn acquire_live_fetch_lock(path: &Path) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let file = options
+        .open(path)
+        .with_context(|| format!("open live-fetch lock file {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(LiveFetchBusy.into()),
+        Err(std::fs::TryLockError::Error(error)) => Err(error).context("acquire live-fetch lock"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_fetch_lock_is_exclusive_and_released_on_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_path = directory.path().join("live-fetch.lock");
+        let first = acquire_live_fetch_lock(&lock_path).unwrap();
+
+        let error = acquire_live_fetch_lock(&lock_path).unwrap_err();
+        assert!(error.downcast_ref::<LiveFetchBusy>().is_some());
+
+        drop(first);
+        assert!(acquire_live_fetch_lock(&lock_path).is_ok());
+    }
 }

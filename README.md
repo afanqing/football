@@ -2,7 +2,7 @@
 
 Rust-first football data research pipeline. Iteration 1 now provides a runnable Bronze -> Silver -> Gold -> walk-forward loop using football-data.org, Polars Parquet, linfa multinomial logistic regression, and one-vs-rest isotonic calibration.
 
-See [HANDOFF.md](HANDOFF.md) for the current phase status, acceptance gaps, verification results, and next-iteration plan.
+See [HANDOFF.md](HANDOFF.md) for the implementation and handoff narrative, and [docs/acceptance/iteration-1-2.md](docs/acceptance/iteration-1-2.md) for the actionable Iteration 1/2 acceptance tracker and evidence log.
 
 ## Requirements
 
@@ -16,7 +16,7 @@ export FOOTBALL_DATA_TOKEN="your-token"
 cargo run -p football-ingest -- matches --competition PL --date-from 2026-08-01 --date-to 2026-11-01
 ```
 
-Snapshots are written below `data/bronze/football-data.org/captured_date=YYYY-MM-DD/`. Each raw response has a neighboring manifest containing its capture time, byte count, source, schema version, and SHA-256 digest. The client spaces requests to stay within the free-tier 10 requests/minute limit.
+Snapshots are written below `data/bronze/football-data.org/captured_date=YYYY-MM-DD/`. Each raw response has a neighboring manifest containing its capture time, byte count, source, schema version, and SHA-256 digest. The client honors `X-Requests-Available-Minute` and `Retry-After` response headers with a 6-second minimum interval; the 10 requests/minute allowance remains the provider limit.
 
 ## Run the offline analysis loop
 

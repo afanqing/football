@@ -20,8 +20,13 @@ export SPORTTERY_RESOURCE='sporttery_odds'
 export SPORTTERY_CRON='0 8 * * *'
 export SPORTTERY_TIMEZONE='Asia/Shanghai'
 export FOOTBALL_DATA_ROOT='../data/bronze'
+export DAGSTER_HOME="$HOME/.football-analytics-dagster"
+mkdir -p "$DAGSTER_HOME"
+cp dagster.yaml "$DAGSTER_HOME/dagster.yaml"
 dagster dev -m definitions
 ```
+
+The instance configuration limits Dagster to one concurrent run. Keep this configuration active on the household-network host; the Rust CLI also holds a nonblocking OS file lock for the entire live fetch and exits with status 75 if another fetch owns it. See [`../docs/runbooks/i1-07-single-live-fetch.md`](../docs/runbooks/i1-07-single-live-fetch.md) for the concurrency checks and failure behavior.
 
 The URL must be configured locally and must not be committed. Dagster passes its Pipes context to the Rust child process. The Rust process stores the response and manifest before reporting asset materialization. A non-2xx response remains preserved in Bronze but exits unsuccessfully so Dagster can retry and alert.
 

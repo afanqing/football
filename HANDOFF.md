@@ -1,20 +1,49 @@
 # Football Analytics Handoff
 
+## Handoff Snapshot (2026-11-01)
+
+- **Base revision:** `abe36aa`; this handoff covers the local acceptance-phase checkpoint. The acceptance register is the status source of truth: [`docs/acceptance/iteration-1-2.md`](docs/acceptance/iteration-1-2.md).
+- **Iteration 1 verified:** one bounded 2025-08-01 to 2026-06-30 football-data.org run returned 380 Premier League matches; Bronze hash/size matched its manifest; Silver and Gold each contain 380 rows; walk-forward completed 15 folds / 300 OOS samples (RPS 0.23847, Brier 0.69301, log-loss 3.24070). This is a pipeline baseline, not evidence of market outperformance.
+- **Code changes in this worktree:** nonblocking `/tmp/football-live-fetch.lock` in the ingest CLI (conflict exits 75), Dagster `max_concurrent_runs: 1`, and adaptive football-data.org throttling from `X-Requests-Available-Minute` / `Retry-After` (six-second floor). The latest local format, 21 workspace tests, and strict Clippy checks passed.
+- **I2-14:** Cao Yuheng confirmed review of the current uncommitted worktree on 2026-11-01; current formatting, 21 workspace tests, and strict Clippy gates passed with `CARGO_BUILD_JOBS=2`. No commit has been made for these changes.
+- **Evidence location:** live Bronze/Silver/Gold/report files are under `/tmp/football-validation-2026-11-01/`; they are not in Git and should be preserved or transferred securely before cleanup. `.env` is local, mode `0600`, gitignored. On 2026-11-01 the token loaded successfully from `.env` and was verified non-empty without displaying it; never copy its value into handoff material, logs, or chat.
+
+**Next owner, in order:**
+
+1. Monitor the I1-02 five-day football-data.org observation started in this environment on 2026-11-02. One PL attempt is scheduled at 08:00 Asia/Shanghai daily through 2026-11-06; denominator is five, with provider/command failures, missed dates, and interrupted runs counted as failures. The observer does not survive container restart; review `/home/coder/football-validation/daily-fetch/attempts.csv`, per-day logs, and Bronze manifests before calculating the rate. See [runbook](docs/runbooks/i1-02-daily-fetch-observation.md).
+2. I1-02's 08:00 rolling snapshots cover the scheduled date and prior 7 days, but only show status at observation times; they do not prove first availability or validate `kickoff + 4 hours`. Keep I1-03 blocked. After confirming provider/request budget, approve and run 15-minute polling around relevant result windows, retaining UTC `observed_at`, match ID, `utcDate`, status, score, and payload hash; bound availability between last non-`FINISHED` and first `FINISHED` observation, then obtain independent sign-off.
+3. I1-06 pilot timing was accepted by Modeling Lead Cao Yuheng (曹宇恒) on 2026-11-01 (three warm feature-group ablations; median 0.737 seconds, runner compile/link reported separately). Re-measure after future feature-code changes, then record the I1-08 exit decision.
+4. For Iteration 2, obtain permitted Sporttery fixtures and implement the versioned parser; then run capture and Dagster checks on the household-network host. Provision a dedicated PostgreSQL test service for ledger/API integration checks. Keep decision-production and 10-match-day/30-day observations blocked until their prerequisites pass.
+5. After any further Rust code changes, rerun workspace gates and obtain a fresh review. This checkpoint is local; no remote push is implied.
+
+## Loading the Local Token
+
+From the repository root, load the ignored `.env` in each shell that needs the token. This prints only whether the variable is set, never its value:
+
+```sh
+set -a
+. ./.env
+set +a
+test -n "$FOOTBALL_DATA_TOKEN" && printf 'FOOTBALL_DATA_TOKEN is set\n'
+```
+
+Do not use `echo "$FOOTBALL_DATA_TOKEN"`, `env`, or `printenv` to verify it. Keep `.env` local and mode `0600`; do not commit it.
+
 ## Current Status
 
 Iteration 1's minimum offline analysis loop is implemented. Iteration 2 now has code for a provider-neutral odds contract, Sporttery raw capture, de-vig normalization, an append-only PostgreSQL ledger, a read-only API, and one Dagster Pipes capture asset. Iteration 2 is **not fully accepted**: no upstream adapter based on real Sporttery payloads, PostgreSQL service, Dagster runtime, or household-network reliability run has been verified.
 
 Repository baseline at handoff:
 
-- HEAD: `3a38782` (`Complete iteration one analysis loop`)
-- Worktree was clean before this document was added.
-- No Git remote is configured; no push has been made.
+- Base HEAD: `abe36aa` (`Implement iteration two data and ledger foundation`); working tree includes the I1-07 lock and response-header-aware throttle changes.
+- Acceptance register: [`docs/acceptance/iteration-1-2.md`](docs/acceptance/iteration-1-2.md)
+- The acceptance register is authoritative for Iteration 1-2 acceptance status and required evidence.
 - Workspace members: `contracts`, `ingest`, `pipeline`, `features`, `odds`, `ledger`, `api`, `backtest`.
 
 ## Delivered in Iteration 1
 
 - `football-contracts`: shared football-data.org response types and match, feature, and snapshot-manifest contracts.
-- `football-ingest`: fetches a competition's match endpoint, spaces requests by six seconds within one client process, and writes immutable Bronze JSON with a manifest containing capture time, byte count, source, contract version, HTTP status, and SHA-256.
+- `football-ingest`: fetches a competition's match endpoint, spaces requests according to `X-Requests-Available-Minute`/`Retry-After` headers with a six-second floor, and writes immutable Bronze JSON with a manifest containing capture time, byte count, source, contract version, HTTP status, and SHA-256.
 - `football-pipeline`: normalizes Bronze JSON to Silver Parquet, estimates completed-result availability as kickoff plus four hours, checks duplicate match identifiers, and preserves nullable scores for unplayed matches.
 - `football-features`: generates point-in-time Gold features: recent-five scored/conceded averages, rest-days difference, Elo difference, and prior-match counts. Historical results are incorporated only when `result_available_at < target kickoff`.
 - `football-backtest`: chronological expanding-window train/calibration/test evaluation, multinomial logistic regression, training-only standardization, one-vs-rest isotonic calibration, probability renormalization, RPS, Brier, log-loss, and class-wise reliability-bin data.
@@ -44,24 +73,20 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Iteration 1 originally had 12 passing unit tests. The current expanded workspace has 19 passing tests: 2 API, 4 backtest, 3 features, 4 ingest, 2 ledger, 2 odds, and 2 pipeline tests. The new tests cover preservation of HTTP error bodies, multiplicative de-vig normalization, source-snapshot validation, API query validation, and read-only route construction. All Rust tests remain fixture/pure-contract checks except the existing synthetic walk-forward; none use a live Sporttery endpoint or PostgreSQL service.
+Iteration 1 originally had 12 passing unit tests. The current workspace has 21 passing tests, including the response-header rate-interval parser and single-live-fetch lock behavior. The 2026-11-01 evidence run also fetched 380 real football-data.org matches and generated Silver, Gold, and a 15-fold walk-forward report. This does not close the five-day reliability window or publication-time validation. The 20-row source-to-Gold consistency audit is recorded, but independent reviewer sign-off remains pending. No live Sporttery endpoint or PostgreSQL service has been verified.
 
 The original Iteration 1 cold build took about ten minutes. The first cold full-workspace build after SQLx/Axum/SciRS2 integration took about 17 minutes 33 seconds; the final warmed format/test/Clippy gates passed. Measure feature iteration speed separately from cold dependency compilation and record both so the two-hour criterion is interpretable.
 
 ## Not Yet Done / Acceptance Gaps
 
-1. No live football-data.org request or five-day reliability measurement has been completed. A valid `FOOTBALL_DATA_TOKEN` and network access are required. Keep the token out of Git, logs, and handoff notes.
-2. No representative real-data Bronze -> Silver -> Gold -> backtest run has been recorded. There are no empirical RPS/Brier results to interpret yet.
-3. The four-hour result-availability delay is a hard-coded research assumption, not an observed timestamp and not yet configurable. Validate it against observed availability before treating historical results as point-in-time evidence.
-4. Feature tests establish key strict-before-time behavior, but the planned manual sample audit of at least 20 real feature rows has not been performed.
-5. The two-hour feature-hypothesis-to-out-of-sample-report median has not been measured. Record start/end times for several representative changes; distinguish warm iteration time from cold build time.
-6. The CLI writes reliability-bin data, not a rendered reliability diagram. A plotting/report step remains if the phase acceptance explicitly requires a visual chart.
-7. Sporttery capture and market normalization code exist, but no actual upstream payload adapter, real capture, or market/model evaluation has been verified. Consequently no model/market disagreement claim is supported.
-8. The request limiter is per `FootballDataClient` instance. It does not coordinate multiple concurrently launched processes; avoid parallel live fetch processes until a shared rate-limit policy exists.
-9. There is no PostgreSQL or Docker service in the current environment. Migrations, queries, append-only triggers, idempotency under DB concurrency, and API routes compile but have not been exercised against a live server.
-10. Python and Dagster are not installed in the current environment. `dagster/definitions.py` and its Pipes configuration are not runtime-validated; only the Rust Pipes client compiles.
-11. The Dagster asset only captures Sporttery Bronze. It does not schedule odds normalization, feature/model inference, decision append, or result settlement. No automatic decision can be produced from current code.
-12. The API has no authentication and should stay bound to loopback or a trusted private network until access control is implemented.
+1. **I1-02:** the five scheduled daily fetches run 2026-11-02 through 2026-11-06. Review all five terminal outcomes and calculate success rate against denominator 5; the observer is a container process and does not auto-restart after container restart.
+2. **I1-03:** daily rolling snapshots cannot establish first-publication time or prove the `kickoff + 4 hours` assumption. Keep blocked until a prospective observation plan, request budget, and source timestamp semantics are approved. The proposed 15-minute result-window polling is not deployed.
+3. **I1-04:** the 20-row Bronze/Silver/Gold consistency audit is complete, but it does not prove observed publication-time validity; independent reviewer sign-off remains pending on I1-03 evidence.
+4. **I1-08:** Iteration 1 exit decision is not started. Do not claim market superiority or incremental value without a market baseline.
+5. **Iteration 2 runtime:** no representative Sporttery payload/parser, household-host capture window, live PostgreSQL integration, or Dagster runtime has been verified. The current Dagster asset captures only Sporttery Bronze; decision production and settlement remain unwired.
+6. **Iteration 2 endurance/security:** the 10-match-day decision/replay window and 30-day Dagster reliability window cannot start until a decision producer exists. Keep the API loopback/private-only until authentication and network controls are implemented and tested.
+7. **I1-06 follow-up:** the Modeling Lead accepted the current ablation pilot. Re-measure if feature code changes; report code/build and warm report time separately.
+8. The 2026-11-01 real-data report has 15 folds and 300 out-of-sample samples (RPS 0.23847, Brier 0.69301, log-loss 3.24070); these metrics are a baseline only, not evidence of market outperformance.
 
 ## Iteration 1 Exit Decision
 
@@ -71,18 +96,16 @@ Do not describe the model as better than the market or as having demonstrated in
 
 ## Immediate Closeout Checklist
 
-1. Provision the API token through the team's secret mechanism; do not commit it or paste it into shared documentation.
-2. Run one bounded live fetch for a selected competition/date range. Preserve the Bronze JSON and manifest; record fetch time, response status, row count, hash, and any API errors without recording the token.
-3. Run the documented Silver, Gold, and walk-forward commands using fresh output paths. Record data coverage, skipped/ineligible rows, fold boundaries, per-fold and aggregated metrics, and reliability-bin output.
-4. Audit at least 20 real Gold rows against their source match history and verify every included prior result was available strictly before the feature decision time. Record the audit method and exceptions.
-5. Run the planned five-day fetch observation and measure feature-change-to-report time for several changes. Report the sample size and median; do not infer acceptance from a single run.
-6. Decide whether the result-availability assumption is acceptable for this research or must be replaced with observed/adjustable availability metadata.
+1. Monitor I1-02 through 2026-11-06; after the fifth scheduled attempt, verify one terminal outcome per date and calculate successful `FINISHED` runs divided by five. `skipped_locked`, provider/command failures, and missed dates count as failures.
+2. Keep I1-03 blocked. Agree the result-window observation scope and provider request budget before enabling the proposed 15-minute polling; persist each observation's UTC time, match ID, `utcDate`, status, score, and payload hash.
+3. Obtain independent review of the I1-04 audit and publication-time policy. Do not infer publication time from `lastUpdated` or daily observation time.
+4. Record the signed I1-08 exit decision and finish the Iteration 2 runtime/integration prerequisites listed in the acceptance register.
 
 Keep the phase boundary explicit: if these empirical checks reveal that Rust experiment iteration exceeds the agreed two-hour median, follow the original fallback and trial a Python analysis/training sidecar while keeping Rust ingestion, feature contracts, point-in-time checks, and durable outputs authoritative.
 
 ## Iteration 2 Acceptance Status
 
-**Code foundation: partial pass. Runtime/integration acceptance: pending.** Preserve the four-plane direction and Rust data/feature boundary. Do not count compiled SQL or a declared Dagster schedule as deployment acceptance.
+**Code foundation: partial pass. Runtime/integration acceptance: pending.** I2-14 code gates and current-worktree review are complete. Preserve the four-plane direction and Rust data/feature boundary. Do not count compiled SQL or a declared Dagster schedule as deployment acceptance.
 
 The implementation order so far:
 
