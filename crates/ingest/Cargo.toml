@@ -9,6 +9,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
+dagster_pipes_rust.workspace = true
 football-contracts = { path = "../contracts" }
 hex.workspace = true
 reqwest.workspace = true

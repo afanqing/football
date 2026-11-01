@@ -1,0 +1,17 @@
+[package]
+name = "football-odds"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+football-contracts = { path = "../contracts" }
+hex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true

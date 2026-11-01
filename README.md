@@ -2,6 +2,8 @@
 
 Rust-first football data research pipeline. Iteration 1 now provides a runnable Bronze -> Silver -> Gold -> walk-forward loop using football-data.org, Polars Parquet, linfa multinomial logistic regression, and one-vs-rest isotonic calibration.
 
+See [HANDOFF.md](HANDOFF.md) for the current phase status, acceptance gaps, verification results, and next-iteration plan.
+
 ## Requirements
 
 - Rust and Cargo (workspace MSRV: 1.89)
@@ -47,15 +49,40 @@ football-data.org provides match kickoff and final scores but this first slice d
 ## Verify
 
 ```sh
-cargo test --workspace
-```
-
-## Verify
-
-```sh
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The workspace sets one Cargo build job to reduce peak memory during Polars and SciRS2 compilation. Live API ingestion and the empirical five-day reliability/iteration-speed acceptance checks still require the team's API token and real data.
+## Iteration 2 foundation
+
+Iteration 2 now includes an upstream-neutral Sporttery Bronze capture command, a canonical 1X2 odds contract with multiplicative de-vig normalization, a PostgreSQL append-only decision ledger, a read-only Axum API, and a Dagster Pipes capture asset. The actual upstream payload adapter, a running PostgreSQL/Dagster deployment, and the 10-match-day reliability acceptance are still outstanding. See [HANDOFF.md](HANDOFF.md) for precise status and next actions.
+
+Capture from the household-network host. Configure the endpoint locally; do not commit its URL or credentials:
+
+```sh
+export SPORTTERY_ODDS_URL='your-local-endpoint'
+cargo run -p football-ingest -- sporttery --resource sporttery_odds
+```
+
+The raw response and a manifest are stored under `data/bronze/sporttery/captured_date=...`. Non-2xx bodies are preserved for diagnosis and the command exits unsuccessfully. After an adapter produces the canonical `ThreeWayOddsSnapshot` JSON, normalize it offline:
+
+```sh
+cargo run -p football-odds -- normalize data/odds/three-way.json data/market/three-way.json
+```
+
+The canonical snapshot contains `source`, `source_event_id`, `competition_code`, `home_team_name`, `away_team_name`, `captured_at`, and `decimal_odds` in home/draw/away order. The output contains raw implied probabilities, overround, multiplicatively de-vigged probabilities, method name, and a SHA-256 of the source snapshot.
+
+Initialize PostgreSQL once using a migration-capable role. API runtime only connects and does not run DDL:
+
+```sh
+export DATABASE_URL='postgres://...'
+cargo run -p football-ledger -- migrate
+cargo run -p football-api
+```
+
+The API binds to `127.0.0.1:8080` by default and exposes `GET /health`, paginated/filterable `GET /ledger`, `GET /ledger/:id`, and `GET /ledger/:id/settlements`. It has no write routes. Do not bind it to a public interface until authentication and deployment network controls are added. Ledger append and settlement commands accept JSON input files via `cargo run -p football-ledger -- append <file>` and `settle <file>`; use unique idempotency keys and retain the referenced immutable snapshots.
+
+Dagster capture orchestration setup and schedule configuration are in [dagster/README.md](dagster/README.md). Run Dagster only on the household-network capture host. Its current asset schedules Bronze capture; model inference, automated ledger append, and settlement are not yet wired into that DAG.
+
+The workspace sets one Cargo build job to reduce peak memory during Polars and SciRS2 compilation. Live football-data.org ingestion and the empirical five-day reliability/iteration-speed acceptance still require the team's API token and real data.

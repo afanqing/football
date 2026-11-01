@@ -156,3 +156,30 @@ pub struct SnapshotManifest {
     pub payload_bytes: u64,
     pub payload_sha256: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ThreeWayOddsSnapshot {
+    pub source: String,
+    pub source_event_id: String,
+    pub competition_code: Option<String>,
+    pub home_team_name: String,
+    pub away_team_name: String,
+    pub captured_at: DateTime<Utc>,
+    pub decimal_odds: [f64; 3],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ThreeWayMarketProbability {
+    pub snapshot_sha256: String,
+    pub source: String,
+    pub source_event_id: String,
+    pub competition_code: Option<String>,
+    pub home_team_name: String,
+    pub away_team_name: String,
+    pub captured_at: DateTime<Utc>,
+    pub decimal_odds: [f64; 3],
+    pub raw_implied_probabilities: [f64; 3],
+    pub probabilities: [f64; 3],
+    pub overround: f64,
+    pub de_vig_method: String,
+}

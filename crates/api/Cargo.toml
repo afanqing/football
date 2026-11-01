@@ -1,0 +1,17 @@
+[package]
+name = "football-api"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum = "0.7.9"
+chrono.workspace = true
+clap.workspace = true
+football-ledger = { path = "../ledger" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true

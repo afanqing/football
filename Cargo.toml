@@ -4,6 +4,9 @@ members = [
 	"crates/ingest",
 	"crates/pipeline",
 	"crates/features",
+	"crates/odds",
+	"crates/ledger",
+	"crates/api",
 	"crates/backtest",
 ]
 resolver = "2"
@@ -15,6 +18,7 @@ rust-version = "1.89"
 
 [workspace.dependencies]
 anyhow = "1"
+dagster_pipes_rust = "0.1.8"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
@@ -26,6 +30,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "json", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
 scirs2-core = { version = "0.6.5", default-features = false, features = ["array"] }
 sklears-calibration = "0.2.0"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }

@@ -7,6 +7,7 @@ use reqwest::{Client, StatusCode};
 use sha2::{Digest, Sha256};
 
 const SOURCE: &str = "football-data.org";
+const SPORTTERY_SOURCE: &str = "sporttery";
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(6);
 
 pub struct FootballDataClient {
@@ -125,6 +126,64 @@ impl SnapshotStore {
         write_new_file(&manifest_path, &serialized)?;
         Ok(manifest)
     }
+
+    pub fn write_sporttery_response(
+        &self,
+        resource: &str,
+        captured_at: DateTime<Utc>,
+        http_status: u16,
+        payload: &[u8],
+    ) -> Result<SnapshotManifest> {
+        if resource.trim().is_empty() || resource.contains(['/', '\\']) {
+            bail!("resource must be a non-empty path-safe identifier");
+        }
+        let digest = hex::encode(Sha256::digest(payload));
+        let date_partition = captured_at.format("%Y-%m-%d").to_string();
+        let directory = self
+            .root
+            .join(SPORTTERY_SOURCE)
+            .join(format!("captured_date={date_partition}"));
+        std::fs::create_dir_all(&directory)
+            .with_context(|| format!("create snapshot directory {}", directory.display()))?;
+
+        let stem = format!("{}-{resource}-{digest}", captured_at.timestamp_millis());
+        write_new_file(&directory.join(format!("{stem}.json")), payload)?;
+        let manifest = SnapshotManifest {
+            contract_version: CONTRACT_VERSION,
+            source: SPORTTERY_SOURCE.to_owned(),
+            resource: resource.to_owned(),
+            captured_at,
+            http_status,
+            payload_bytes: payload.len() as u64,
+            payload_sha256: digest,
+        };
+        write_new_file(
+            &directory.join(format!("{stem}.manifest.json")),
+            &serde_json::to_vec_pretty(&manifest).context("serialize manifest")?,
+        )?;
+        Ok(manifest)
+    }
+}
+
+pub async fn capture_sporttery_resource(
+    url: &str,
+    resource: &str,
+    store: &SnapshotStore,
+) -> Result<SnapshotManifest> {
+    let response = Client::builder()
+        .user_agent(concat!("football-analytics/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(30))
+        .build()?
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("request Sporttery resource failed; URL omitted"))?;
+    let status = response.status().as_u16();
+    let body = response
+        .bytes()
+        .await
+        .context("read Sporttery response body")?;
+    store.write_sporttery_response(resource, Utc::now(), status, &body)
 }
 
 fn write_new_file(path: &Path, contents: &[u8]) -> Result<()> {
@@ -215,5 +274,37 @@ mod tests {
             .flat_map(|date_dir| std::fs::read_dir(date_dir.unwrap().path()).unwrap())
             .count();
         assert_eq!(files, 2);
+    }
+
+    #[test]
+    fn writes_sporttery_raw_body_even_for_upstream_error_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SnapshotStore::new(directory.path());
+        let captured_at = Utc::now();
+        let payload = br#"{"code":567,"message":"blocked"}"#;
+        let manifest = store
+            .write_sporttery_response("odds", captured_at, 567, payload)
+            .unwrap();
+
+        assert_eq!(manifest.source, SPORTTERY_SOURCE);
+        assert_eq!(manifest.http_status, 567);
+        assert_eq!(
+            manifest.payload_sha256,
+            hex::encode(Sha256::digest(payload))
+        );
+        let directory = directory
+            .path()
+            .join(SPORTTERY_SOURCE)
+            .join(format!("captured_date={}", captured_at.format("%Y-%m-%d")));
+        let payload_file = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+                    && !path.to_string_lossy().ends_with(".manifest.json")
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(payload_file).unwrap(), payload);
     }
 }

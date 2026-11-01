@@ -1,0 +1,19 @@
+[package]
+name = "football-ledger"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+chrono.workspace = true
+football-contracts = { path = "../contracts" }
+football-odds = { path = "../odds" }
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
