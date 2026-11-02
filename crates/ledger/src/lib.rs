@@ -251,6 +251,7 @@ fn validate_decision(input: &AppendDecision) -> Result<()> {
         home_team_name: input.market.home_team_name.clone(),
         away_team_name: input.market.away_team_name.clone(),
         captured_at: input.market.captured_at,
+        source_updated_at: input.market.source_updated_at,
         decimal_odds: input.market.decimal_odds,
     };
     let expected_market = normalize_three_way(&raw_snapshot)?;
@@ -315,6 +316,7 @@ mod tests {
             home_team_name: "Home".to_owned(),
             away_team_name: "Away".to_owned(),
             captured_at: DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            source_updated_at: None,
             decimal_odds: [2.0, 3.0, 4.0],
         };
         let market = normalize_three_way(&snapshot).unwrap();
@@ -332,5 +334,215 @@ mod tests {
         assert!(validate_decision(&input).is_ok());
         input.market.probabilities = [0.5, 0.25, 0.25];
         assert!(validate_decision(&input).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the dedicated football_ledger_test database and writes deterministic fixtures"]
+    async fn postgres_acceptance_covers_ledger_and_cursor_pagination() {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = connect(&database_url).await.unwrap();
+        let database_name: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(database_name, "football_ledger_test");
+
+        migrate(&pool).await.unwrap();
+        migrate(&pool).await.unwrap();
+
+        let run_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string();
+        let competition_code = format!("I204-{run_id}");
+        let primary_input =
+            acceptance_decision(&run_id, &competition_code, "primary", "match-primary");
+        let primary = append_decision(&pool, &primary_input).await.unwrap();
+        assert_eq!(primary.match_key, primary_input.match_key);
+        assert_eq!(primary.competition_code, primary_input.competition_code);
+        assert_eq!(
+            primary.market_snapshot_sha256,
+            primary_input.market.snapshot_sha256
+        );
+        assert_eq!(
+            primary.feature_snapshot_sha256,
+            primary_input.feature_snapshot_sha256
+        );
+        assert_eq!(primary.model_version, primary_input.model_version);
+        assert_eq!(primary.decided_at, primary_input.decided_at);
+        assert_eq!(primary.market_probabilities.0, primary_input.market);
+        assert_eq!(
+            primary.model_probabilities.0,
+            primary_input.model_probabilities
+        );
+        let retry = append_decision(&pool, &primary_input).await.unwrap();
+        assert_eq!(retry.id, primary.id);
+        assert_eq!(retry.market_probabilities.0, primary_input.market);
+        assert_eq!(
+            retry.model_probabilities.0,
+            primary_input.model_probabilities
+        );
+
+        let mut conflicting_input = primary_input.clone();
+        conflicting_input.model_version = "different-content".to_owned();
+        assert!(append_decision(&pool, &conflicting_input).await.is_err());
+
+        let settled_at = DateTime::from_timestamp(1_800_000_100, 0).unwrap();
+        let settled_result = serde_json::json!({"outcome": "home", "score": "1-0"});
+        let settled = append_settlement_event(
+            &pool,
+            primary.id,
+            &format!("i204-{run_id}-settled"),
+            "settled",
+            settled_result.clone(),
+            settled_at,
+        )
+        .await
+        .unwrap();
+        let settled_retry = append_settlement_event(
+            &pool,
+            primary.id,
+            &format!("i204-{run_id}-settled"),
+            "settled",
+            settled_result,
+            settled_at,
+        )
+        .await
+        .unwrap();
+        assert_eq!(settled_retry.id, settled.id);
+
+        let correction = append_settlement_event(
+            &pool,
+            primary.id,
+            &format!("i204-{run_id}-correction"),
+            "correction",
+            serde_json::json!({"outcome": "draw", "score": "1-1"}),
+            DateTime::from_timestamp(1_800_000_200, 0).unwrap(),
+        )
+        .await
+        .unwrap();
+        let events = list_settlement_events(&pool, primary.id).await.unwrap();
+        assert!(events.iter().any(|event| event.id == settled.id));
+        assert!(events.iter().any(|event| event.id == correction.id));
+
+        assert!(
+            sqlx::query("UPDATE decision_ledger SET model_version = 'mutated' WHERE id = $1")
+                .bind(primary.id)
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        assert!(
+            sqlx::query("DELETE FROM decision_ledger WHERE id = $1")
+                .bind(primary.id)
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        assert!(
+            sqlx::query(
+                "UPDATE decision_settlement_events SET event_type = 'voided' WHERE id = $1"
+            )
+            .bind(settled.id)
+            .execute(&pool)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query("DELETE FROM decision_settlement_events WHERE id = $1")
+                .bind(settled.id)
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+
+        let concurrent_inputs = (0..4)
+            .map(|index| {
+                acceptance_decision(
+                    &run_id,
+                    &competition_code,
+                    &format!("concurrent-{index}"),
+                    &format!("match-concurrent-{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut concurrent_inserts = tokio::task::JoinSet::new();
+        for input in concurrent_inputs {
+            let pool = pool.clone();
+            concurrent_inserts.spawn(async move { append_decision(&pool, &input).await });
+        }
+        let mut inserted = Vec::new();
+        while let Some(result) = concurrent_inserts.join_next().await {
+            inserted.push(result.unwrap().unwrap());
+        }
+        assert_eq!(inserted.len(), 4);
+
+        let first_page = list_decisions(
+            &pool,
+            &DecisionFilter {
+                competition_code: Some(competition_code.clone()),
+                limit: Some(2),
+                ..DecisionFilter::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_page.len(), 2);
+        let cursor = first_page.last().unwrap().id;
+
+        let late_input = acceptance_decision(
+            &run_id,
+            &competition_code,
+            "concurrent-late",
+            "match-concurrent-late",
+        );
+        let next_page_filter = DecisionFilter {
+            competition_code: Some(competition_code),
+            before_id: Some(cursor),
+            limit: Some(2),
+            ..DecisionFilter::default()
+        };
+        let (second_page, late_insert) = tokio::join!(
+            list_decisions(&pool, &next_page_filter),
+            append_decision(&pool, &late_input)
+        );
+        let second_page = second_page.unwrap();
+        late_insert.unwrap();
+        assert!(!second_page.is_empty());
+        assert!(second_page.iter().all(|record| record.id < cursor));
+        assert!(
+            second_page
+                .iter()
+                .all(|record| first_page.iter().all(|first| first.id != record.id))
+        );
+    }
+
+    fn acceptance_decision(
+        run_id: &str,
+        competition_code: &str,
+        idempotency_suffix: &str,
+        match_key: &str,
+    ) -> AppendDecision {
+        let snapshot = ThreeWayOddsSnapshot {
+            source: "acceptance-test".to_owned(),
+            source_event_id: match_key.to_owned(),
+            competition_code: Some(competition_code.to_owned()),
+            home_team_name: "Home Test".to_owned(),
+            away_team_name: "Away Test".to_owned(),
+            captured_at: DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            source_updated_at: None,
+            decimal_odds: [2.0, 3.0, 4.0],
+        };
+        AppendDecision {
+            idempotency_key: format!("i204-{run_id}-{idempotency_suffix}"),
+            match_key: match_key.to_owned(),
+            competition_code: competition_code.to_owned(),
+            market: normalize_three_way(&snapshot).unwrap(),
+            feature_snapshot_sha256: hex::encode(Sha256::digest(match_key.as_bytes())),
+            model_version: "acceptance-model-v1".to_owned(),
+            decided_at: snapshot.captured_at,
+            model_probabilities: [0.4, 0.3, 0.3],
+        }
     }
 }

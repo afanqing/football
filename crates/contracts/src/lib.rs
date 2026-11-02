@@ -166,6 +166,8 @@ pub struct ThreeWayOddsSnapshot {
     pub away_team_name: String,
     pub captured_at: DateTime<Utc>,
     pub decimal_odds: [f64; 3],
+    #[serde(default)]
+    pub source_updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -177,6 +179,8 @@ pub struct ThreeWayMarketProbability {
     pub home_team_name: String,
     pub away_team_name: String,
     pub captured_at: DateTime<Utc>,
+    #[serde(default)]
+    pub source_updated_at: Option<DateTime<Utc>>,
     pub decimal_odds: [f64; 3],
     pub raw_implied_probabilities: [f64; 3],
     pub probabilities: [f64; 3],

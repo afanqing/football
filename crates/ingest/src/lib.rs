@@ -1,15 +1,172 @@
 use std::{fs::OpenOptions, io::Write, path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 use football_contracts::{CONTRACT_VERSION, MatchesResponse, SnapshotManifest};
 use reqwest::{Client, StatusCode, header::HeaderMap};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const SOURCE: &str = "football-data.org";
 const SPORTTERY_SOURCE: &str = "sporttery";
+pub const SPORTTERY_HAD_PARSER_VERSION: &str = "sporttery-had-v1";
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(6);
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Deserialize)]
+struct SportteryFixedBonusResponse {
+    #[serde(default)]
+    success: bool,
+    #[serde(rename = "errorCode", default)]
+    error_code: Option<String>,
+    #[serde(default)]
+    value: Option<SportteryFixedBonusValue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SportteryFixedBonusValue {
+    #[serde(rename = "oddsHistory", default)]
+    odds_history: Option<SportteryOddsHistory>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SportteryOddsHistory {
+    #[serde(rename = "matchId", default)]
+    match_id: Option<u64>,
+    #[serde(rename = "homeTeamAllName", default)]
+    home_team_all_name: Option<String>,
+    #[serde(rename = "awayTeamAllName", default)]
+    away_team_all_name: Option<String>,
+    #[serde(rename = "hadList", default)]
+    had_list: Vec<SportteryHadRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SportteryHadRow {
+    #[serde(default)]
+    h: Option<String>,
+    #[serde(default)]
+    d: Option<String>,
+    #[serde(default)]
+    a: Option<String>,
+    #[serde(rename = "updateDate", default)]
+    update_date: Option<String>,
+    #[serde(rename = "updateTime", default)]
+    update_time: Option<String>,
+}
+
+pub fn parse_sporttery_had_v1(
+    payload: &[u8],
+    captured_at: DateTime<Utc>,
+) -> Result<football_contracts::ThreeWayOddsSnapshot> {
+    let response: SportteryFixedBonusResponse =
+        serde_json::from_slice(payload).context("decode Sporttery HAD response")?;
+
+    if !response.success || response.error_code.as_deref() != Some("0") {
+        bail!("Sporttery HAD response is unsuccessful or indicates an upstream error");
+    }
+
+    let history = response
+        .value
+        .and_then(|value| value.odds_history)
+        .context("Sporttery HAD response missing value.oddsHistory")?;
+
+    let source_event_id = history
+        .match_id
+        .map(|id| id.to_string())
+        .context("missing matchId in Sporttery HAD response")?;
+    let home_team_name = history
+        .home_team_all_name
+        .filter(|name| !name.trim().is_empty())
+        .context("missing homeTeamAllName in Sporttery HAD response")?;
+    let away_team_name = history
+        .away_team_all_name
+        .filter(|name| !name.trim().is_empty())
+        .context("missing awayTeamAllName in Sporttery HAD response")?;
+
+    let latest = history
+        .had_list
+        .into_iter()
+        .filter_map(|row| {
+            let (home, draw, away, date, time) = match (
+                row.h.as_deref(),
+                row.d.as_deref(),
+                row.a.as_deref(),
+                row.update_date.as_deref(),
+                row.update_time.as_deref(),
+            ) {
+                (Some(home), Some(draw), Some(away), Some(date), Some(time)) => {
+                    (home, draw, away, date, time)
+                }
+                _ => return None,
+            };
+
+            let source_updated_at = match parse_market_update_timestamp(date, time) {
+                Ok(value) => value,
+                Err(_) => return None,
+            };
+
+            let decimal_odds = match (
+                parse_decimal_odd(home, "home"),
+                parse_decimal_odd(draw, "draw"),
+                parse_decimal_odd(away, "away"),
+            ) {
+                (Ok(home), Ok(draw), Ok(away)) => [home, draw, away],
+                _ => return None,
+            };
+
+            Some(ParsedHadMarket {
+                source_updated_at,
+                decimal_odds,
+            })
+        })
+        .max_by_key(|market| market.source_updated_at)
+        .context("Sporttery HAD response contains no valid market rows")?;
+
+    Ok(football_contracts::ThreeWayOddsSnapshot {
+        source: SPORTTERY_SOURCE.to_owned(),
+        source_event_id,
+        competition_code: None,
+        home_team_name,
+        away_team_name,
+        captured_at,
+        source_updated_at: Some(latest.source_updated_at),
+        decimal_odds: latest.decimal_odds,
+    })
+}
+
+#[derive(Debug)]
+struct ParsedHadMarket {
+    source_updated_at: DateTime<Utc>,
+    decimal_odds: [f64; 3],
+}
+
+fn parse_market_update_timestamp(date: &str, time: &str) -> Result<DateTime<Utc>> {
+    let parsed_date = NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d")
+        .context("parse updateDate in Asia/Shanghai market timestamp")?;
+    let parsed_time = NaiveTime::parse_from_str(time.trim(), "%H:%M:%S")
+        .context("parse updateTime in Asia/Shanghai market timestamp")?;
+
+    let shanghai = chrono::FixedOffset::east_opt(8 * 3600)
+        .context("construct Asia/Shanghai timezone offset")?
+        .from_local_datetime(&parsed_date.and_time(parsed_time))
+        .single()
+        .context("resolve local Asia/Shanghai timestamp")?;
+
+    Ok(shanghai.with_timezone(&Utc))
+}
+
+fn parse_decimal_odd(raw: &str, label: &str) -> Result<f64> {
+    let parsed = raw
+        .trim()
+        .parse::<f64>()
+        .with_context(|| format!("parse {label} odds value '{raw}'"))?;
+
+    if !parsed.is_finite() || parsed <= 1.0 {
+        bail!("{label} odds must be a finite decimal greater than 1.0");
+    }
+    Ok(parsed)
+}
 
 pub struct FootballDataClient {
     client: Client,
@@ -242,6 +399,22 @@ mod tests {
     use super::*;
     use football_contracts::{MatchRecord, MatchesResponse};
 
+    const HAD_FIXTURE: &[u8] = br#"{
+            "success": true,
+            "errorCode": "0",
+            "value": {
+                "oddsHistory": {
+                    "matchId": 42,
+                    "homeTeamAllName": "Home FC",
+                    "awayTeamAllName": "Away FC",
+                    "hadList": [
+                        {"h":"2.52","d":"3.16","a":"2.35","updateDate":"2026-11-01","updateTime":"21:03:01"},
+                        {"h":"2.45","d":"3.35","a":"2.31","updateDate":"2026-10-30","updateTime":"09:35:14"}
+                    ]
+                }
+            }
+        }"#;
+
     const FIXTURE: &[u8] = br#"{
       "matches": [{
         "id": 42,
@@ -343,6 +516,86 @@ mod tests {
             .flat_map(|date_dir| std::fs::read_dir(date_dir.unwrap().path()).unwrap())
             .count();
         assert_eq!(files, 2);
+    }
+
+    #[test]
+    fn parses_latest_had_market_using_shanghai_time_not_array_order() {
+        let captured_at = DateTime::parse_from_rfc3339("2026-11-02T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let snapshot = parse_sporttery_had_v1(HAD_FIXTURE, captured_at).unwrap();
+
+        assert_eq!(snapshot.source, SPORTTERY_SOURCE);
+        assert_eq!(snapshot.source_event_id, "42");
+        assert_eq!(snapshot.home_team_name, "Home FC");
+        assert_eq!(snapshot.away_team_name, "Away FC");
+        assert_eq!(snapshot.decimal_odds, [2.52, 3.16, 2.35]);
+        assert_eq!(
+            snapshot.source_updated_at,
+            Some(
+                DateTime::parse_from_rfc3339("2026-11-01T13:03:01Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        assert_eq!(snapshot.captured_at, captured_at);
+    }
+
+    #[test]
+    #[ignore = "requires the secured Sporttery fixture directory outside the repository"]
+    fn parses_approved_external_fixed_bonus_capture() {
+        let fixture_directory = std::env::var("SPORTTERY_FIXTURE_DIR")
+            .expect("SPORTTERY_FIXTURE_DIR must point to the secured fixture directory");
+        let payload =
+            std::fs::read(std::path::Path::new(&fixture_directory).join("fixed-bonus-2xx.json"))
+                .unwrap();
+        let captured_at = DateTime::parse_from_rfc3339("2026-11-02T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let snapshot = parse_sporttery_had_v1(&payload, captured_at).unwrap();
+
+        assert_eq!(snapshot.source_event_id, "2042426");
+        assert_eq!(snapshot.decimal_odds, [2.52, 3.16, 2.35]);
+        assert_eq!(
+            snapshot.source_updated_at,
+            Some(
+                DateTime::parse_from_rfc3339("2026-11-01T13:03:01Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_error_and_malformed_had_payloads() {
+        let captured_at = DateTime::parse_from_rfc3339("2026-11-02T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let error_payload = br#"{"success":false,"errorCode":"567"}"#;
+        assert!(parse_sporttery_had_v1(error_payload, captured_at).is_err());
+
+        let mut missing_selection: serde_json::Value = serde_json::from_slice(HAD_FIXTURE).unwrap();
+        let mut missing_row = missing_selection["value"]["oddsHistory"]["hadList"][0]
+            .as_object_mut()
+            .unwrap()
+            .clone();
+        missing_row.remove("a");
+        missing_selection["value"]["oddsHistory"]["hadList"] = serde_json::json!([missing_row]);
+        let missing_selection_payload = serde_json::to_vec(&missing_selection).unwrap();
+        assert!(parse_sporttery_had_v1(&missing_selection_payload, captured_at).is_err());
+
+        let mut changed_shape: serde_json::Value = serde_json::from_slice(HAD_FIXTURE).unwrap();
+        let mut changed_row = changed_shape["value"]["oddsHistory"]["hadList"][0]
+            .as_object()
+            .unwrap()
+            .clone();
+        changed_row.insert("h".to_owned(), serde_json::json!(2.52));
+        changed_shape["value"]["oddsHistory"]["hadList"] = serde_json::json!([changed_row]);
+        let changed_shape_payload = serde_json::to_vec(&changed_shape).unwrap();
+        assert!(parse_sporttery_had_v1(&changed_shape_payload, captured_at).is_err());
     }
 
     #[test]

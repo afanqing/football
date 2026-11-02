@@ -1,20 +1,20 @@
 # Football Analytics Handoff
 
-## Handoff Snapshot (2026-11-01)
+## Handoff Snapshot (2026-11-02)
 
-- **Base revision:** `abe36aa`; this handoff covers the local acceptance-phase checkpoint. The acceptance register is the status source of truth: [`docs/acceptance/iteration-1-2.md`](docs/acceptance/iteration-1-2.md).
+- **Base revision:** `d6452cd` (`Implement I1-03 result observer`); this local checkpoint layers the Sporttery HAD parser, source timestamp propagation, PostgreSQL/API acceptance tests, and current evidence records on that base. The acceptance register is the status source of truth: [`docs/acceptance/iteration-1-2.md`](docs/acceptance/iteration-1-2.md).
 - **Iteration 1 verified:** one bounded 2025-08-01 to 2026-06-30 football-data.org run returned 380 Premier League matches; Bronze hash/size matched its manifest; Silver and Gold each contain 380 rows; walk-forward completed 15 folds / 300 OOS samples (RPS 0.23847, Brier 0.69301, log-loss 3.24070). This is a pipeline baseline, not evidence of market outperformance.
-- **Code changes in this worktree:** nonblocking `/tmp/football-live-fetch.lock` in the ingest CLI (conflict exits 75), Dagster `max_concurrent_runs: 1`, adaptive football-data.org throttling from `X-Requests-Available-Minute` / `Retry-After` (six-second floor), and the Rust I1-03 observer/validator/summarizer. Latest format, 28 workspace tests, and strict Clippy checks passed.
-- **I2-14:** Cao Yuheng (曹宇恒) completed a second review of the current uncommitted worktree, including the I1-03 observer, on 2026-11-01. `cargo fmt --all -- --check`, 28 workspace tests, and strict Clippy pass on this reviewed worktree. No commit has been made for these changes.
+- **Code changes in this checkpoint:** nonblocking `/tmp/football-live-fetch.lock`, adaptive football-data.org throttling, the I1-03 observer, `sporttery-had-v1`, source-market timestamp propagation, and PostgreSQL/API integration coverage. Pre-commit format, workspace tests, and strict Clippy passed; the dedicated database tests and secured parser fixture also passed separately.
+- **I1-02:** the 2026-11-02 08:00 CST attempt succeeded (1/5); the observer is alive. The five-day window remains open through 2026-11-06.
 - **Evidence location:** live Bronze/Silver/Gold/report files are under `/tmp/football-validation-2026-11-01/`; they are not in Git and should be preserved or transferred securely before cleanup. `.env` is local, mode `0600`, gitignored. On 2026-11-01 the token loaded successfully from `.env` and was verified non-empty without displaying it; never copy its value into handoff material, logs, or chat.
 
 **Next owner, in order:**
 
-1. Monitor the I1-02 five-day football-data.org observation started in this environment on 2026-11-02. One PL attempt is scheduled at 08:00 Asia/Shanghai daily through 2026-11-06; denominator is five, with provider/command failures, missed dates, and interrupted runs counted as failures. The observer does not survive container restart; review `/home/coder/football-validation/daily-fetch/attempts.csv`, per-day logs, and Bronze manifests before calculating the rate. See [runbook](docs/runbooks/i1-02-daily-fetch-observation.md).
+1. Continue I1-02's five-day football-data.org observation through 2026-11-06. The first 08:00 CST PL attempt succeeded; denominator is five, and provider/command failures, missed dates, and interrupted runs count as failures. The observer does not survive container restart; review `/home/coder/football-validation/daily-fetch/attempts.csv`, per-day logs, and Bronze manifests daily. See [runbook](docs/runbooks/i1-02-daily-fetch-observation.md).
 2. Keep I1-03 `BLOCKED`. I1-02's 08:00 rolling snapshots cannot prove first result availability. The Rust poller, validator, and offline summarizer are implemented and `cargo test -p football-ingest` passes, but no I1-03 live poll has run; the plan template is still PENDING. Follow [the I1-03 runbook](docs/runbooks/i1-03-result-availability-observation.md): populate at least 20 pre-registered PL fixtures across two match weeks; get named data/technical lead, data engineer, and operator approval for semantics, schedule, terms, and worst-case request budget; then validate the plan and run the observer under supervision on a persistent host. Coordinate its schedule with I1-02 and the shared live-fetch lock. `first_result_usable_observed_at < kickoff+4h` falsifies the current assumption; `last_result_unusable_observed_at >= kickoff+4h` supports it; a crossing interval, poll gap, or missing bound is inconclusive. Polling provides an interval, not an exact publication timestamp. Do not mark I1-03 PASS until every sampled fixture is dispositioned, evidence/code consequences are reviewed, and independent sign-off is recorded.
 3. I1-06 pilot timing was accepted by Modeling Lead Cao Yuheng (曹宇恒) on 2026-11-01 (three warm feature-group ablations; median 0.737 seconds, runner compile/link reported separately). Re-measure after future feature-code changes, then record the I1-08 exit decision.
-4. For Iteration 2, obtain permitted Sporttery fixtures and implement the versioned parser; then run capture and Dagster checks on the household-network host. Provision a dedicated PostgreSQL test service for ledger/API integration checks. Keep decision-production and 10-match-day/30-day observations blocked until their prerequisites pass.
-5. After any further Rust code changes, rerun workspace gates and obtain a fresh review. This checkpoint is local; no remote push is implied.
+4. For Iteration 2, the approved fixture and `sporttery-had-v1` parser are ready locally. Next, implement the pre-Pipes parser-to-normalize-to-ledger test and its missing-input rejection case; then hand the committed Dagster capture code and runbook to the Operator for household-host deployment. Ledger/API migrations and integration acceptance passed against the dedicated PostgreSQL test database on 2026-11-02 CST. Keep live decision production and 10-match-day/30-day observations open.
+5. This is a local checkpoint only; no remote push is implied. Re-run the Rust gates after further code changes.
 
 ## Loading the Local Token
 
@@ -31,11 +31,11 @@ Do not use `echo "$FOOTBALL_DATA_TOKEN"`, `env`, or `printenv` to verify it. Kee
 
 ## Current Status
 
-Iteration 1's minimum offline analysis loop is implemented. Iteration 2 now has code for a provider-neutral odds contract, Sporttery raw capture, de-vig normalization, an append-only PostgreSQL ledger, a read-only API, and one Dagster Pipes capture asset. Iteration 2 is **not fully accepted**: no upstream adapter based on real Sporttery payloads, PostgreSQL service, Dagster runtime, or household-network reliability run has been verified.
+Iteration 1's minimum offline analysis loop is implemented. Iteration 2 has a provider-neutral odds contract, Sporttery raw capture and local HAD parser, de-vig normalization, an append-only PostgreSQL ledger, a read-only API, and one Dagster Pipes capture asset. Iteration 2 is **not fully accepted**: household-host capture/Dagster deployment and reliability runs remain open, and the controlled decision producer has not been wired. The secured 2xx parser fixture and local mocked Dagster runtime passed; PostgreSQL migration and ledger/API integration cases passed against the dedicated test database. See the acceptance register.
 
 Repository baseline at handoff:
 
-- Base HEAD: `abe36aa` (`Implement iteration two data and ledger foundation`); working tree includes the I1-07 lock and response-header-aware throttle changes.
+- Checkpoint base: `d6452cd` (`Implement I1-03 result observer`).
 - Acceptance register: [`docs/acceptance/iteration-1-2.md`](docs/acceptance/iteration-1-2.md)
 - The acceptance register is authoritative for Iteration 1-2 acceptance status and required evidence.
 - Workspace members: `contracts`, `ingest`, `pipeline`, `features`, `odds`, `ledger`, `api`, `backtest`.
@@ -61,7 +61,7 @@ The backtest JSON contains structured reliability-bin data suitable for plotting
 - `dagster/definitions.py`: a daily, timezone-configurable Dagster asset invokes the Rust capture CLI through `dagster_pipes_rust` and reports Bronze materialization metadata. This first DAG covers capture only.
 - `.env.example` contains placeholders only. `README.md` and `dagster/README.md` document commands and deployment boundaries.
 
-The repository deliberately does not guess Sporttery JSON field names. Captured provider payloads remain raw; an adapter to the canonical snapshot contract must be implemented after the team supplies representative, legally/operationally usable payload fixtures. The API does not expose a decision write route.
+The versioned `sporttery-had-v1` adapter parses the approved secured `getFixedBonusV1.qry` fixture into the canonical snapshot contract and preserves `source_updated_at` separately from `captured_at`. The other error/boundary variants are synthetic and household-host capture remains unverified. The API does not expose a decision write route.
 
 ## Verification Completed
 
@@ -73,17 +73,17 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Iteration 1 originally had 12 passing unit tests. The current workspace has 21 passing tests, including the response-header rate-interval parser and single-live-fetch lock behavior. The 2026-11-01 evidence run also fetched 380 real football-data.org matches and generated Silver, Gold, and a 15-fold walk-forward report. This does not close the five-day reliability window or publication-time validation. The 20-row source-to-Gold consistency audit is recorded, but independent reviewer sign-off remains pending. No live Sporttery endpoint or PostgreSQL service has been verified.
+Iteration 1 originally had 12 passing unit tests. The current workspace test run passed 28 tests with 2 database acceptance tests ignored by default; strict Clippy and format checks passed. The dedicated Ledger and API database tests each passed when explicitly enabled, and the secured Sporttery 2xx parser fixture passed separately. The 2026-11-01 evidence run fetched 380 real football-data.org matches and generated Silver, Gold, and a 15-fold walk-forward report. This does not close the five-day reliability window or publication-time validation. The 20-row source-to-Gold consistency audit is recorded, but independent reviewer sign-off remains pending. No live Sporttery endpoint or household-host runtime has been verified; see the acceptance register.
 
-The original Iteration 1 cold build took about ten minutes. The first cold full-workspace build after SQLx/Axum/SciRS2 integration took about 17 minutes 33 seconds; the final warmed format/test/Clippy gates passed. Measure feature iteration speed separately from cold dependency compilation and record both so the two-hour criterion is interpretable.
+The original Iteration 1 cold build took about ten minutes. The first cold full-workspace build after SQLx/Axum/SciRS2 integration took about 17 minutes 33 seconds; the current workspace format, test, and strict Clippy gates pass. PostgreSQL migration and ledger/API integration tests also pass against the dedicated test database. Measure feature iteration speed separately from cold dependency compilation and record both so the two-hour criterion is interpretable.
 
 ## Not Yet Done / Acceptance Gaps
 
-1. **I1-02:** the five scheduled daily fetches run 2026-11-02 through 2026-11-06. Review all five terminal outcomes and calculate success rate against denominator 5; the observer is a container process and does not auto-restart after container restart.
+1. **I1-02:** the five scheduled daily fetches run 2026-11-02 through 2026-11-06. The first attempt succeeded (1/5); review all five terminal outcomes and calculate success rate against denominator 5. The observer is a container process and does not auto-restart after container restart.
 2. **I1-03:** daily rolling snapshots cannot establish first-publication time or prove the `kickoff + 4 hours` assumption. Keep blocked until a prospective observation plan, request budget, and source timestamp semantics are approved. The proposed 15-minute result-window polling is not deployed.
 3. **I1-04:** the 20-row Bronze/Silver/Gold consistency audit is complete, but it does not prove observed publication-time validity; independent reviewer sign-off remains pending on I1-03 evidence.
 4. **I1-08:** Iteration 1 exit decision is not started. Do not claim market superiority or incremental value without a market baseline.
-5. **Iteration 2 runtime:** no representative Sporttery payload/parser, household-host capture window, live PostgreSQL integration, or Dagster runtime has been verified. The current Dagster asset captures only Sporttery Bronze; decision production and settlement remain unwired.
+5. **Iteration 2 runtime/decision:** the approved 2xx Sporttery fixture parses locally, but synthetic failure variants do not establish upstream behavior and household-host capture/Dagster remain unverified. PostgreSQL migration and ledger/API integration are verified on the dedicated test database. The current Dagster asset captures only Sporttery Bronze; the controlled decision producer and settlement remain unwired.
 6. **Iteration 2 endurance/security:** the 10-match-day decision/replay window and 30-day Dagster reliability window cannot start until a decision producer exists. Keep the API loopback/private-only until authentication and network controls are implemented and tested.
 7. **I1-06 follow-up:** the Modeling Lead accepted the current ablation pilot. Re-measure if feature code changes; report code/build and warm report time separately.
 8. The 2026-11-01 real-data report has 15 folds and 300 out-of-sample samples (RPS 0.23847, Brier 0.69301, log-loss 3.24070); these metrics are a baseline only, not evidence of market outperformance.
@@ -96,7 +96,7 @@ Do not describe the model as better than the market or as having demonstrated in
 
 ## Immediate Closeout Checklist
 
-1. Monitor I1-02 through 2026-11-06; after the fifth scheduled attempt, verify one terminal outcome per date and calculate successful `FINISHED` runs divided by five. `skipped_locked`, provider/command failures, and missed dates count as failures.
+1. Monitor I1-02 through 2026-11-06; the first attempt succeeded. After the fifth scheduled attempt, verify one terminal outcome per date and calculate successful `FINISHED` runs divided by five. `skipped_locked`, provider/command failures, and missed dates count as failures.
 2. Keep I1-03 blocked. Agree the result-window observation scope and provider request budget before enabling the proposed 15-minute polling; persist each observation's UTC time, match ID, `utcDate`, status, score, and payload hash.
 3. Obtain independent review of the I1-04 audit and publication-time policy. Do not infer publication time from `lastUpdated` or daily observation time.
 4. Record the signed I1-08 exit decision and finish the Iteration 2 runtime/integration prerequisites listed in the acceptance register.
@@ -109,23 +109,21 @@ Keep the phase boundary explicit: if these empirical checks reveal that Rust exp
 
 The implementation order so far:
 
-1. Rust raw capture and canonical market normalization contract are implemented, but source-specific decoding awaits real fixtures.
-2. PostgreSQL schema, Rust ledger operations, JSON CLI, and read-only API are implemented, but need live DB integration tests.
-3. Dagster Pipes capture asset and daily schedule are implemented, but need Python/Dagster runtime validation on the home-network host.
-4. End-to-end model-to-ledger decision generation and automated settlement remain unwired.
+1. Rust raw capture, `sporttery-had-v1` parsing of the approved secured fixture, and canonical market normalization are implemented. Error/boundary variants remain simulated; household-host capture is still required.
+2. PostgreSQL schema, Rust ledger operations, JSON CLI, and read-only API are implemented; migration and ledger/API integration tests passed against the dedicated test database on 2026-11-02 CST.
+3. Dagster Pipes capture asset and daily schedule are implemented and pass local mocked runtime validation; household-host deployment, scheduling, and live capture validation remain.
+4. End-to-end model-to-ledger decision generation and automated settlement remain unwired. I2-09's first offline milestone is to parse/normalize the approved fixture, append it with source and capture times plus required model/feature inputs, and prove incomplete inputs cannot append; this has not run yet.
 
 ## Next Acceptance Tasks
 
-1. Supply representative Sporttery payload fixtures (including 2xx, HTTP 567, missing selections, changed field shapes) and implement a versioned parser from provider JSON into `ThreeWayOddsSnapshot`. Record the exact source resource and local capture time; do not commit secrets or sensitive request URLs.
-2. Run capture from the household-network host. Verify body bytes and SHA-256 against the manifest; perform a five-day observation and report scheduled success rate. Validate retry cadence and whether capture failures preserve raw error bodies.
-3. Start PostgreSQL on a dedicated test database, run `cargo run -p football-ledger -- migrate`, and exercise append, identical idempotent retry, conflicting idempotency key, settlement, correction, and delete/update rejection. Verify stored JSON round-trips and pagination under concurrent inserts.
-4. Add integration tests or a reproducible script for the above DB cases. The current unit test validates only the pure probability/hash contract.
-5. Install the Dagster environment declared in `dagster/requirements.txt` on the household host. Run `cd dagster && dagster dev -m definitions`, manually materialize `sporttery_bronze`, then verify scheduled run metadata, retry handling, and Rust Pipes materialization/failed run behavior.
-6. Confirm the configured endpoint, schedule time/timezone, retention policy, and whether URLs contain credentials. Keep secrets in the host environment, not Dagster logs or repository config.
-7. Wire odds normalization and existing feature/model outputs into a controlled decision creation job only after the team defines a common match identity, operational decision cutoff, and market timestamp policy. Store actual lock-time `decided_at` and immutable feature/market hashes. Until then, the ledger must not imply a live model decision exists.
-8. Add automated settlement only after a trusted result source and correction policy are specified. Corrections must append events and preserve their chronology.
-9. Keep the read-only API on loopback; add auth/network policy before binding externally. Verify `/health`, date/competition filters, cursor pagination, not-found behavior, and error handling against PostgreSQL.
-10. Re-run `cargo fmt --all -- --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`. Then update this handoff with observed environment versions, dates, result evidence, and unresolved blockers.
+1. Implement I2-09's offline parser-to-normalize-to-ledger integration test using the approved external fixture; assert `matchId`, source-market time, and capture time survive into the appended market JSON, and assert missing market/features/model inputs are rejected.
+2. Package this local commit, Dagster definitions, requirements, and runbook for the Operator; deploy on the household-network host. Keep endpoint credentials in the host environment and exclude `.env`, raw fixtures, and generated `target/` artifacts from the handoff bundle.
+3. On the household host, manually materialize `sporttery_bronze` against the approved endpoint; verify body bytes and SHA-256 against the manifest, scheduled run metadata, retry handling, Pipes materialization, failed-run behavior, and secret-safe logs. Local mocked success and failure/retry paths are recorded but do not substitute for this host run.
+4. Confirm the configured endpoint, schedule time/timezone, retention policy, and whether URLs contain credentials. Keep secrets in the host environment, not Dagster logs or repository config.
+5. After the offline I2-09 proof, wire odds normalization and existing feature/model outputs into a controlled decision creation job. Use the approved common match identity, operational decision cutoff, and market timestamp policy; store actual lock-time `decided_at` and immutable feature/market hashes. Until then, the ledger must not imply a live model decision exists.
+6. Add automated settlement only after a trusted result source and correction policy are specified. Corrections must append events and preserve their chronology.
+7. Keep the read-only API on loopback; add auth/network policy before binding externally. Integration routes have passed against PostgreSQL; preserve loopback/private-only exposure until external access controls are implemented and tested.
+8. Re-run `cargo fmt --all -- --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings` after further Rust changes. Then update this handoff with observed environment versions, dates, result evidence, and unresolved blockers.
 
 Iteration 2 acceptance remains at least 10 match days with no missing decisions, snapshot-hash replay consistency, documented retry/idempotency tests, and at least 95% scheduled household-network odds capture success. Define whether a "match day" means calendar date or a date with scheduled fixtures before measuring. Current implementation has no end-to-end decision producer, so this acceptance cannot yet start.
 

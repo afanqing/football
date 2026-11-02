@@ -155,6 +155,10 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
+    use football_contracts::ThreeWayOddsSnapshot;
+    use football_ledger::{AppendDecision, append_decision, append_settlement_event, connect};
+    use football_odds::normalize_three_way;
     use sqlx::postgres::PgPoolOptions;
 
     #[test]
@@ -185,5 +189,188 @@ mod tests {
             .connect_lazy("postgres://test:test@127.0.0.1/football")
             .unwrap();
         let _router = router(pool);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the dedicated football_ledger_test database and writes deterministic fixtures"]
+    async fn postgres_api_acceptance_exercises_read_routes() {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = connect(&database_url).await.unwrap();
+        let database_name: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(database_name, "football_ledger_test");
+        let migration_count_before: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        let run_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string();
+        let competition_code = format!("API-{run_id}");
+        let decided_at = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut records = Vec::new();
+        for index in 0..3 {
+            let input = api_acceptance_decision(
+                &run_id,
+                &competition_code,
+                index,
+                decided_at + Duration::seconds(index),
+            );
+            records.push(append_decision(&pool, &input).await.unwrap());
+        }
+        append_settlement_event(
+            &pool,
+            records[0].id,
+            &format!("api-{run_id}-settled"),
+            "settled",
+            serde_json::json!({"outcome": "home", "score": "1-0"}),
+            decided_at + Duration::seconds(10),
+        )
+        .await
+        .unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let api = router(pool.clone());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, api).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        let base_url = format!("http://{address}");
+
+        let health = client
+            .get(format!("{base_url}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(
+            health.json::<serde_json::Value>().await.unwrap()["status"],
+            "ok"
+        );
+
+        let filtered = client
+            .get(format!("{base_url}/ledger"))
+            .query(&[
+                ("competition", competition_code.as_str()),
+                ("decided_from", "2027-01-15T07:59:59Z"),
+                ("decided_before", "2027-01-15T08:00:03Z"),
+                ("limit", "2"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(filtered.status(), StatusCode::OK);
+        let first_page = filtered.json::<serde_json::Value>().await.unwrap();
+        let first_items = first_page["items"].as_array().unwrap();
+        assert_eq!(first_items.len(), 2);
+        let cursor = first_page["next_before_id"].as_i64().unwrap();
+        let first_record_id = first_items[0]["id"].as_i64().unwrap();
+
+        let next_page = client
+            .get(format!("{base_url}/ledger"))
+            .query(&[
+                ("competition", competition_code.as_str()),
+                ("before_id", &cursor.to_string()),
+                ("limit", "2"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(next_page.status(), StatusCode::OK);
+        let next_page = next_page.json::<serde_json::Value>().await.unwrap();
+        let next_items = next_page["items"].as_array().unwrap();
+        assert_eq!(next_items.len(), 1);
+        assert!(next_items[0]["id"].as_i64().unwrap() < cursor);
+
+        let detail = client
+            .get(format!("{base_url}/ledger/{first_record_id}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(detail.status(), StatusCode::OK);
+        let detail = detail.json::<serde_json::Value>().await.unwrap();
+        assert_eq!(detail["id"].as_i64().unwrap(), first_record_id);
+
+        let settlements = client
+            .get(format!("{base_url}/ledger/{}/settlements", records[0].id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(settlements.status(), StatusCode::OK);
+        let settlements = settlements.json::<serde_json::Value>().await.unwrap();
+        assert_eq!(settlements.as_array().unwrap().len(), 1);
+        assert_eq!(settlements[0]["event_type"], "settled");
+
+        let missing = client
+            .get(format!("{base_url}/ledger/9223372036854775807"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let invalid = client
+            .get(format!("{base_url}/ledger"))
+            .query(&[
+                ("decided_from", "2027-01-15T08:00:00Z"),
+                ("decided_before", "2027-01-15T08:00:00Z"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+        let migration_count_after: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(migration_count_after, migration_count_before);
+
+        pool.close().await;
+        let internal_error = client
+            .get(format!("{base_url}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(internal_error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let error_body = internal_error.json::<serde_json::Value>().await.unwrap();
+        assert_eq!(error_body["error"], "request failed");
+        server.abort();
+    }
+
+    fn api_acceptance_decision(
+        run_id: &str,
+        competition_code: &str,
+        index: i64,
+        decided_at: DateTime<Utc>,
+    ) -> AppendDecision {
+        let source_event_id = format!("api-{run_id}-{index}");
+        let snapshot = ThreeWayOddsSnapshot {
+            source: "api-acceptance-test".to_owned(),
+            source_event_id: source_event_id.clone(),
+            competition_code: Some(competition_code.to_owned()),
+            home_team_name: "Home Test".to_owned(),
+            away_team_name: "Away Test".to_owned(),
+            captured_at: decided_at,
+            source_updated_at: None,
+            decimal_odds: [2.0, 3.0, 4.0],
+        };
+        AppendDecision {
+            idempotency_key: format!("api-{run_id}-{index}"),
+            match_key: source_event_id,
+            competition_code: competition_code.to_owned(),
+            market: normalize_three_way(&snapshot).unwrap(),
+            feature_snapshot_sha256: "a".repeat(64),
+            model_version: "api-acceptance-v1".to_owned(),
+            decided_at,
+            model_probabilities: [0.4, 0.3, 0.3],
+        }
     }
 }

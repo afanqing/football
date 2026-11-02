@@ -35,6 +35,7 @@ pub fn normalize_three_way(snapshot: &ThreeWayOddsSnapshot) -> Result<ThreeWayMa
         home_team_name: snapshot.home_team_name.clone(),
         away_team_name: snapshot.away_team_name.clone(),
         captured_at: snapshot.captured_at,
+        source_updated_at: snapshot.source_updated_at,
         decimal_odds: snapshot.decimal_odds,
         raw_implied_probabilities,
         probabilities,
@@ -57,6 +58,7 @@ mod tests {
             home_team_name: "Home FC".to_owned(),
             away_team_name: "Away FC".to_owned(),
             captured_at: DateTime::<Utc>::from_timestamp(1_800_000_000, 0).unwrap(),
+            source_updated_at: None,
             decimal_odds,
         }
     }

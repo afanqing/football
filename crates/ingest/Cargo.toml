@@ -13,6 +13,7 @@ dagster_pipes_rust.workspace = true
 football-contracts = { path = "../contracts" }
 hex.workspace = true
 reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
