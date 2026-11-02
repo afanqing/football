@@ -1062,6 +1062,7 @@ dependencies = [
  "chrono",
  "clap",
  "football-contracts",
+ "football-ingest",
  "football-odds",
  "hex",
  "serde",

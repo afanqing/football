@@ -295,6 +295,7 @@ fn same_decision(existing: &DecisionRecord, input: &AppendDecision) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use football_ingest::{SPORTTERY_HAD_PARSER_VERSION, parse_sporttery_had_v1};
     use sha2::{Digest, Sha256};
 
     #[test]
@@ -334,6 +335,100 @@ mod tests {
         assert!(validate_decision(&input).is_ok());
         input.market.probabilities = [0.5, 0.25, 0.25];
         assert!(validate_decision(&input).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the dedicated football_ledger_test database and approved secured Sporttery fixture"]
+    async fn approved_sporttery_fixture_flows_to_ledger_and_rejects_missing_inputs() {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let fixture_directory = std::env::var("SPORTTERY_FIXTURE_DIR")
+            .expect("SPORTTERY_FIXTURE_DIR must point to the secured fixture directory");
+        let payload =
+            std::fs::read(std::path::Path::new(&fixture_directory).join("fixed-bonus-2xx.json"))
+                .unwrap();
+        let captured_at = DateTime::parse_from_rfc3339("2026-11-02T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let snapshot = parse_sporttery_had_v1(&payload, captured_at).unwrap();
+        let market = normalize_three_way(&snapshot).unwrap();
+
+        assert_eq!(snapshot.source_event_id, "2042426");
+        assert_eq!(
+            snapshot.source_updated_at.unwrap().to_rfc3339(),
+            "2026-11-01T13:03:01+00:00"
+        );
+        assert_eq!(snapshot.captured_at, captured_at);
+        assert_eq!(market.source, "sporttery");
+        assert_eq!(market.source_event_id, "2042426");
+
+        let pool = connect(&database_url).await.unwrap();
+        let database_name: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(database_name, "football_ledger_test");
+        migrate(&pool).await.unwrap();
+
+        let run_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string();
+        let idempotency_key = format!("i209-{run_id}-approved-fixture");
+        let feature_snapshot_sha256 =
+            hex::encode(Sha256::digest(b"acceptance-placeholder-features"));
+        let input = AppendDecision {
+            idempotency_key: idempotency_key.clone(),
+            match_key: format!("{}:{}", snapshot.source, snapshot.source_event_id),
+            competition_code: "DE-BUNDESLIGA".to_owned(),
+            market: market.clone(),
+            feature_snapshot_sha256: feature_snapshot_sha256.clone(),
+            model_version: format!("acceptance-placeholder-{SPORTTERY_HAD_PARSER_VERSION}"),
+            decided_at: captured_at,
+            model_probabilities: [1.0 / 3.0; 3],
+        };
+
+        let record = append_decision(&pool, &input).await.unwrap();
+        assert_eq!(record.source_event_id, "2042426");
+        assert_eq!(record.market_snapshot_sha256, market.snapshot_sha256);
+        assert_eq!(record.feature_snapshot_sha256, feature_snapshot_sha256);
+        assert_eq!(
+            record.market_probabilities.0.source_updated_at,
+            snapshot.source_updated_at
+        );
+        assert_eq!(record.market_probabilities.0.captured_at, captured_at);
+
+        for missing_field in [
+            "market",
+            "feature_snapshot_sha256",
+            "model_version",
+            "model_probabilities",
+        ] {
+            let mut serialized = serde_json::to_value(&input).unwrap();
+            serialized.as_object_mut().unwrap().remove(missing_field);
+            assert!(serde_json::from_value::<AppendDecision>(serialized).is_err());
+        }
+
+        let mut missing_feature = input.clone();
+        missing_feature.idempotency_key = format!("i209-{run_id}-missing-feature");
+        missing_feature.feature_snapshot_sha256.clear();
+        assert!(append_decision(&pool, &missing_feature).await.is_err());
+
+        let mut missing_model = input;
+        missing_model.idempotency_key = format!("i209-{run_id}-missing-model");
+        missing_model.model_version.clear();
+        missing_model.model_probabilities = [0.0; 3];
+        assert!(append_decision(&pool, &missing_model).await.is_err());
+
+        let rejected_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_ledger WHERE idempotency_key IN ($1, $2)",
+        )
+        .bind(format!("i209-{run_id}-missing-feature"))
+        .bind(format!("i209-{run_id}-missing-model"))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rejected_count, 0);
     }
 
     #[tokio::test]

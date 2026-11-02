@@ -71,7 +71,15 @@ The observer is implemented as Rust subcommands in `football-ingest`; it uses th
 
 	`run.json` binds the observer state to the exact approved plan bytes by SHA-256; a resumed run or summary using a different plan is rejected. `polls.jsonl` is the append-only per-poll evidence ledger; Bronze payloads and manifests are stored below the state directory. `intervals.json` is derived output and can be regenerated from that same plan. Restrict the state directory to the operator; raw payloads are not for Git.
 
-Implementation status (2026-11-01): poller, plan validation, interval summarizer, and boundary tests are present in the repository. `cargo test -p football-ingest` passed locally. No live I1-03 poll has been deployed or run; the checked-in plan template remains `PENDING`, has no approved fixtures/budget, and must not be used to claim evidence.
+Implementation status (2026-11-02): poller, plan validation, interval summarizer, and boundary tests are present in the repository. `cargo test -p football-ingest` passed locally. The checked-in plan template remains `PENDING`; the approved private plan is deployed and waiting. No live I1-03 result poll has run, so no empirical availability claim may be made yet.
+
+### Deployment check (2026-11-02)
+
+- The operator confirmed this Docker will not restart during the observation window. Because no service manager is installed, the release observer was detached with `nohup` as PID `309289`; its PID is in `/home/coder/football-validation/i1-03-state/observer.pid`. The observer holds `observer.lock`; `supervisor.log` records startup and stdout/stderr go to `observer.log`. Check the PID and logs daily; do not silently restart after an interruption.
+- The private state directory is mode `0700`; state files are mode `0600`. `run.json` binds the run to the approved plan SHA-256 `7fa26ad4d60e9b8d32768d1f7a4695a90539474b00f5a5e4c7397b4c8b82b5f4`. `observer.log` and `polls.jsonl` are empty/not yet created before the first poll; this is expected while all fixtures are in the future.
+- A separate `matches --competition PL --date-from 2026-11-21 --date-to 2026-11-21` network/storage test returned 7 matches (HTTP 200), 6,948 bytes, SHA-256 `bb04a0ac7be354008fc715ea0ad063a0211b9cda860bd24cd6b19bfa9abf22fc`. Its sanitized summary is `/home/coder/football-validation/i1-03-deploy-test/network-test.log`; the payload and manifest are in the same private directory, all mode `0600`. This is a connectivity/logging test, not an I1-03 result poll and not part of the 247-request budget.
+- The plan has 20 fixtures on six UTC kickoff dates: 2026-11-21 (7), 11-22 (2), 11-23 (1), 11-27 (1), 11-28 (3), and 11-29 (6). The first observation slot is 2026-11-21 14:00 UTC. No result poll has run yet; I1-03 remains BLOCKED pending all dispositions and independent review.
+- `scripts/validate_i1_03_results.sh` is prepared for the post-window audit. Synthetic testing produced `READY_FOR_INDEPENDENT_REVIEW` for 20 SUPPORTED fixtures and `BLOCKED` for 20 RIGHT_CENSORED fixtures; a structured `Cookie` field was rejected without echoing its value. This is verifier testing only, not evidence from the live observation. After the final deadline, run it against the approved plan and state; the generated report always leaves independent sign-off `PENDING`.
 
 ## Data record
 
@@ -100,19 +108,20 @@ I1-03 stays BLOCKED until the approved observation evidence and code/policy cons
 
 ## To-do before first poll
 
-- [ ] Data/technical lead approves the proposed 20-fixture, two-match-week minimum or records a replacement target.
-- [ ] Operator confirms the target fixture windows and persistent host/supervision plan.
+- [x] Data/technical lead approves the proposed 20-fixture, two-match-week minimum or records a replacement target.
+- [x] Operator confirms the target fixture windows and no-restart Docker/supervision assumption for this run.
 - [ ] Data engineer verifies status, score, timestamp, and query semantics; explicitly rejects `lastUpdated` as first-publication evidence unless independently validated.
 - [ ] Operator calculates and gets approval for worst-case request budget and confirms provider terms/limits.
 - [x] Implement and version the Rust poller, append-only poll ledger, immutable Bronze response hashes, explicit failure/gap outcomes, offline plan validator, and interval summarizer; `cargo test -p football-ingest` passes.
-- [ ] Copy the plan template to the secure host, register at least 20 real fixtures across at least two match weeks, fill named approvers and flags, and set a request budget no lower than the validator's worst-case estimate.
-- [ ] Dry-run `validate-results` on the populated plan and review its request estimate before setting approval status.
+- [x] Copy the plan template to a private location, register at least 20 real fixtures across at least two match weeks, fill named approvers and flags, and set a request budget no lower than the validator's worst-case estimate.
+- [x] Dry-run `validate-results` on the populated plan and review its request estimate before setting approval status.
 - [ ] Run one supervised poll slot on the operator-managed persistent host and verify a single ledger entry, Bronze hash/manifest match, and no secret in logs before enabling the full registered window.
 - [ ] Coordinate cadence with I1-02 and verify shared-lock behavior, with I1-02's scheduled fetch taking priority.
-- [ ] Pre-register fixtures, start/end rules, cutoff classification, and approvers before the first live poll.
+- [x] Pre-register fixtures, start/end rules, cutoff classification, and approvers before the first live poll.
 
 ## To-do after observation
 
+- [ ] After the final fixture deadline and observer exit, run `scripts/validate_i1_03_results.sh` with the approved private plan and state directory; review the generated report and attach it for independent sign-off. The script is a pre-review aid, not an automatic acceptance decision.
 - [ ] Recompute transition fields and classifications from immutable poll records; verify row counts, hashes, clock/timezone handling, and all gaps.
 - [ ] Publish the per-match interval table, sample summary, exceptions, and signed reviewer decision in the acceptance evidence record.
 - [ ] If falsified or inconclusive, keep I1-03 BLOCKED, revise the availability policy using conservative evidence, update code/tests, and repeat affected I1-04 audit rows.
